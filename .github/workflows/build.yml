@@ -1,0 +1,66 @@
+name: Build mod from zip
+on:
+  push:
+    paths:
+      - 'upload/*.zip'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Find zip
+        shell: bash
+        run: |
+          ZIP=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD -- 'upload/*.zip' | tail -n 1 || true)
+          if [ -z "$ZIP" ]; then ZIP=$(ls -t upload/*.zip | head -n 1); fi
+          echo "Using: $ZIP"
+          echo "ZIP=$ZIP" >> $GITHUB_ENV
+
+      - name: Unpack and prepare project
+        shell: bash
+        run: |
+          mkdir -p /tmp/work /tmp/project
+          unzip -q "$ZIP" -d /tmp/work
+          GRADLEW=$(find /tmp/work -name gradlew | head -n 1 || true)
+          if [ -n "$GRADLEW" ]; then
+            echo "Full project found"
+            cp -r "$(dirname "$GRADLEW")"/. /tmp/project/
+          else
+            echo "Code only, using template"
+            cp -r template/. /tmp/project/
+            SRC=$(find /tmp/work -type d -name src | head -n 1)
+            if [ -z "$SRC" ]; then echo "No src folder in zip"; exit 1; fi
+            cp -r "$(dirname "$SRC")"/. /tmp/project/
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v3
+
+      - name: Build
+        shell: bash
+        working-directory: /tmp/project
+        run: |
+          chmod +x gradlew
+          ./gradlew build --no-daemon 2>&1 | tee /tmp/build.log
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: mod-jar
+          path: /tmp/project/build/libs/*.jar
+
+      - name: Upload log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: /tmp/build.log
